@@ -1,11 +1,12 @@
 interface DeleteModalProps {
   concertName: string;
   show: boolean;
+  hasReservations?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
 
-export default function DeleteModal({ concertName, show, onCancel, onConfirm }: DeleteModalProps) {
+export default function DeleteModal({ concertName, show, hasReservations = false, onCancel, onConfirm }: DeleteModalProps) {
   if (!show) return null;
 
   return (
@@ -13,7 +14,13 @@ export default function DeleteModal({ concertName, show, onCancel, onConfirm }: 
       <div className="bg-white rounded-lg p-4 sm:p-6 w-full max-w-sm sm:max-w-96 text-center">
         <div className="text-red-500 text-3xl sm:text-4xl mb-4">✕</div>
         <p className="text-base sm:text-lg font-medium mb-1">Are you sure to delete?</p>
-        <p className="text-gray-500 mb-6">{concertName}</p>
+        <p className="text-gray-500 mb-2">{concertName}</p>
+        {hasReservations && (
+          <p className="text-amber-600 text-sm mb-4 bg-amber-50 rounded-lg px-3 py-2">
+            This concert has active reservations. It will be archived instead of permanently deleted.
+          </p>
+        )}
+        {!hasReservations && <div className="mb-4" />}
         <div className="flex gap-3 justify-center">
           <button
             onClick={onCancel}

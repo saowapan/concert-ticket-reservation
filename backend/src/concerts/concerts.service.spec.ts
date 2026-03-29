@@ -15,6 +15,7 @@ describe('ConcertsService', () => {
     name: 'Test Concert',
     description: 'A test concert',
     seats: 100,
+    deletedAt: null,
     reservations: [],
   };
 
@@ -77,6 +78,7 @@ describe('ConcertsService', () => {
       expect(result).toEqual([mockConcert]);
       expect(mockConcertRepository.find).toHaveBeenCalledWith({
         relations: ['reservations'],
+        order: { id: 'ASC' },
       });
     });
   });

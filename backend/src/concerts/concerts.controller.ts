@@ -21,6 +21,11 @@ export class ConcertsController {
     return this.concertsService.getStats();
   }
 
+  @Get('deleted')
+  findDeleted() {
+    return this.concertsService.findDeleted();
+  }
+
   @Get()
   findAll() {
     return this.concertsService.findAll();
@@ -35,6 +40,12 @@ export class ConcertsController {
   @HttpCode(HttpStatus.CREATED)
   create(@Body() dto: CreateConcertDto) {
     return this.concertsService.create(dto);
+  }
+
+  @Post(':id/restore')
+  @HttpCode(HttpStatus.OK)
+  restore(@Param('id', ParseIntPipe) id: number) {
+    return this.concertsService.restore(id);
   }
 
   @Delete(':id')

@@ -21,12 +21,7 @@ export default function UserConcertsPage() {
   );
 
   const isReserved = (concertId: number) => {
-    return userReservations.find((r) => r.concert.id === concertId);
-  };
-
-  const refreshAll = () => {
-    mutateConcerts();
-    mutateReservations();
+    return userReservations.find((r) => r.concert?.id === concertId);
   };
 
   const showError = (err: unknown, fallback: string) => {
@@ -41,9 +36,12 @@ export default function UserConcertsPage() {
   const handleReserve = async (concertId: number) => {
     setLoadingId(concertId);
     try {
-      await api.post('/reservations', { userId, concertId });
+      const res = await api.post('/reservations', { userId, concertId });
       setToast({ show: true, message: 'Reserved successfully', type: 'success' });
-      refreshAll();
+
+      // Optimistic update — update local cache, revalidate silently in background
+      mutateReservations([...userReservations, res.data], { revalidate: false });
+      mutateConcerts(concerts, { revalidate: true });
     } catch (err: unknown) {
       showError(err, 'Failed to reserve');
     } finally {
@@ -58,7 +56,13 @@ export default function UserConcertsPage() {
     try {
       await api.delete(`/reservations/${reservation.id}`);
       setToast({ show: true, message: 'Cancelled successfully', type: 'success' });
-      refreshAll();
+
+      // Optimistic update — update local cache, revalidate silently in background
+      mutateReservations(
+        userReservations.filter((r) => r.id !== reservation.id),
+        { revalidate: false }
+      );
+      mutateConcerts(concerts, { revalidate: true });
     } catch (err: unknown) {
       showError(err, 'Failed to cancel');
     } finally {

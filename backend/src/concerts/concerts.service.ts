@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Not, IsNull } from 'typeorm';
 import { Concert } from './concert.entity';
 import { Reservation } from '../reservations/reservation.entity';
 import { ReservationHistory } from '../reservations/reservation-history.entity';
@@ -18,7 +18,19 @@ export class ConcertsService {
   ) {}
 
   findAll(): Promise<Concert[]> {
-    return this.concertsRepository.find({ relations: ['reservations'] });
+    return this.concertsRepository.find({
+      relations: ['reservations'],
+      order: { id: 'ASC' },
+    });
+  }
+
+  findDeleted(): Promise<Concert[]> {
+    return this.concertsRepository.find({
+      withDeleted: true,
+      where: { deletedAt: Not(IsNull()) },
+      relations: ['reservations'],
+      order: { deletedAt: 'DESC' },
+    });
   }
 
   async findOne(id: number): Promise<Concert> {
@@ -33,6 +45,15 @@ export class ConcertsService {
   create(dto: CreateConcertDto): Promise<Concert> {
     const concert = this.concertsRepository.create(dto);
     return this.concertsRepository.save(concert);
+  }
+
+  async restore(id: number): Promise<void> {
+    const concert = await this.concertsRepository.findOne({
+      where: { id },
+      withDeleted: true,
+    });
+    if (!concert) throw new NotFoundException('Concert not found');
+    await this.concertsRepository.recover(concert);
   }
 
   async remove(id: number): Promise<void> {

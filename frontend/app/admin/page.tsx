@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import useSWR from 'swr';
 import api from '@/lib/api';
 import { fetcher } from '@/lib/fetcher';
@@ -11,8 +12,27 @@ import DeleteModal from '@/components/DeleteModal';
 import Toast from '@/components/Toast';
 import type { Concert, ToastState } from '@/lib/types';
 
+type Tab = 'overview' | 'create' | 'deleted';
+const VALID_TABS: Tab[] = ['overview', 'create', 'deleted'];
+
 export default function AdminPage() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'create'>('overview');
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-50" />}>
+      <AdminContent />
+    </Suspense>
+  );
+}
+
+function AdminContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const tabParam = searchParams.get('tab') as Tab | null;
+  const activeTab = tabParam && VALID_TABS.includes(tabParam) ? tabParam : 'overview';
+
+  const setActiveTab = (tab: Tab) => {
+    router.push(tab === 'overview' ? '/admin' : `/admin?tab=${tab}`, { scroll: false });
+  };
+
   const [form, setForm] = useState({ name: '', description: '', seats: '' });
   const [formError, setFormError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -23,10 +43,12 @@ export default function AdminPage() {
   });
 
   const { data: concerts = [], mutate: mutateConcerts, isLoading, error: fetchError } = useSWR<Concert[]>('/concerts', fetcher);
+  const { data: deletedConcerts = [], mutate: mutateDeleted } = useSWR<Concert[]>('/concerts/deleted', fetcher);
   const { data: stats = { totalSeats: 0, totalReserved: 0, totalCancelled: 0 }, mutate: mutateStats } = useSWR('/concerts/stats/summary', fetcher);
 
   const refreshAll = () => {
     mutateConcerts();
+    mutateDeleted();
     mutateStats();
   };
 
@@ -75,6 +97,13 @@ export default function AdminPage() {
     }
   };
 
+  const tabClass = (tab: Tab) =>
+    `pb-2 text-sm ${
+      activeTab === tab
+        ? 'border-b-2 border-blue-500 text-blue-500 font-semibold'
+        : 'text-gray-400'
+    }`;
+
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-gray-50">
       <Sidebar role="admin" />
@@ -88,25 +117,14 @@ export default function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-6 mb-6 border-b border-gray-200">
-          <button
-            onClick={() => setActiveTab('overview')}
-            className={`pb-2 text-sm ${
-              activeTab === 'overview'
-                ? 'border-b-2 border-blue-500 text-blue-500 font-semibold'
-                : 'text-gray-400'
-            }`}
-          >
+          <button onClick={() => setActiveTab('overview')} className={tabClass('overview')}>
             Overview
           </button>
-          <button
-            onClick={() => setActiveTab('create')}
-            className={`pb-2 text-sm ${
-              activeTab === 'create'
-                ? 'border-b-2 border-blue-500 text-blue-500 font-semibold'
-                : 'text-gray-400'
-            }`}
-          >
+          <button onClick={() => setActiveTab('create')} className={tabClass('create')}>
             Create
+          </button>
+          <button onClick={() => setActiveTab('deleted')} className={tabClass('deleted')}>
+            Deleted {deletedConcerts.length > 0 && `(${deletedConcerts.length})`}
           </button>
         </div>
 
@@ -126,6 +144,7 @@ export default function AdminPage() {
                   name={c.name}
                   description={c.description}
                   seats={c.seats}
+                  reservedCount={c.reservations.length}
                   actionLabel="Delete"
                   actionColor="red"
                   onAction={() => setDeleteModal({ show: true, concert: c })}
@@ -190,11 +209,48 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        {/* Deleted Tab */}
+        {activeTab === 'deleted' && (
+          <div>
+            {deletedConcerts.length === 0 ? (
+              <p className="text-gray-500 text-center py-12">No deleted concerts.</p>
+            ) : (
+              deletedConcerts.map((c) => (
+                <div key={c.id} className="border border-gray-200 rounded-xl p-4 md:p-6 mb-4 bg-white">
+                  <h3 className="text-lg md:text-xl font-semibold text-blue-500 mb-3">{c.name}</h3>
+                  <hr className="mb-3" />
+                  <p className="text-sm md:text-base text-gray-600 mb-4">{c.description}</p>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-gray-700 text-sm md:text-base">
+                      👤 {c.reservations.length} / {c.seats.toLocaleString()}
+                    </span>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.post(`/concerts/${c.id}/restore`);
+                          setToast({ show: true, message: 'Concert restored successfully', type: 'success' });
+                          refreshAll();
+                        } catch {
+                          setToast({ show: true, message: 'Failed to restore concert', type: 'error' });
+                        }
+                      }}
+                      className="px-4 py-1.5 md:px-5 md:py-2 text-sm md:text-base text-white bg-emerald-500 hover:bg-emerald-600 rounded-lg transition"
+                    >
+                      Publish
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </main>
 
       <DeleteModal
         concertName={deleteModal.concert?.name || ''}
         show={deleteModal.show}
+        hasReservations={(deleteModal.concert?.reservations.length ?? 0) > 0}
         onCancel={() => setDeleteModal({ show: false, concert: null })}
         onConfirm={confirmDelete}
       />
