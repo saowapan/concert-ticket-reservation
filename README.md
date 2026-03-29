@@ -140,7 +140,7 @@ npm test
 
 ## Bonus
 
-### 1. Optimising for high traffic and large datasets
+### 1. how to optimize your website
 
 - **Redis caching** for concert listings and stats, with cache invalidation on writes. SWR on the frontend already provides client-side caching.
 - **Database indexing** on `userId` and `concertId` columns, plus `EXPLAIN ANALYZE` to identify slow queries. The `getStats()` endpoint already uses `SUM()`/`COUNT()` aggregations instead of loading data into memory.
@@ -150,7 +150,7 @@ npm test
 - **PgBouncer** for database connection pooling under high concurrency.
 - **Read replicas** to offload read-heavy queries from the primary PostgreSQL instance.
 
-### 2. Preventing overselling during concurrent reservations
+### 2. about how to handle when many users want to reserve the ticket at the same time?
 
 The goal: no concert should have more reservations than seats — no one stands during the show.
 
@@ -162,7 +162,9 @@ The goal: no concert should have more reservations than seats — no one stands 
 
 **Recommended approach:** combine row-level locking + unique constraint for correctness without additional infrastructure.
 
-### 3. User authentication and authorisation
+## What can we do to make the system better
+
+### 1. User authentication and authorisation
 
 The current implementation uses a hardcoded user, as authentication was not in scope. In production, I would add:
 
@@ -171,7 +173,7 @@ The current implementation uses a hardcoded user, as authentication was not in s
 - **Role-based access control** using a `@Roles('admin')` guard to protect admin endpoints. User identity extracted from the JWT payload instead of the request body.
 - This would replace the hardcoded `userId`, the "Switch to Admin/User" toggle, and add a dedicated login page with protected route redirects.
 
-### 4. API security
+### 2. API security
 
 - **Rate limiting** (`@nestjs/throttler`) — e.g., 100 req/min per IP, stricter on reservation endpoints to deter bots.
 - **CORS restriction** — lock `enableCors()` to the frontend domain only, with `credentials: true`.
@@ -182,7 +184,7 @@ The current implementation uses a hardcoded user, as authentication was not in s
 - **SQL injection prevention** — already covered by TypeORM's parameterised queries.
 - **Dependency auditing** — `npm audit` integrated into the CI pipeline.
 
-### 5. CI/CD pipeline
+### 3. CI/CD pipeline
 
 **Continuous Integration** (on every PR and push to `main`):
 - Lint (ESLint) → Test (Jest with real PostgreSQL service container) → Build (NestJS + Next.js) → Security audit (`npm audit`)
