@@ -137,178 +137,60 @@ npm test
 | GET | /reservations/user/:userId | 200 | Retrieve reservations belonging to a specific user |
 | GET | /reservations/history | 200 | Retrieve the complete reservation history |
 | GET | /reservations/history/user/:userId | 200 | Retrieve reservation history for a specific user |
-| GET | /users/:id | 200 | Retrieve a user by their ID |
 
 ## Bonus
 
-### Optimising for intensive data volumes and high traffic
+### 1. Optimising for high traffic and large datasets
 
-As the dataset grows and more users access the platform simultaneously, performance can degrade at multiple layers. The following strategies address each bottleneck:
+- **Redis caching** for concert listings and stats, with cache invalidation on writes. SWR on the frontend already provides client-side caching.
+- **Database indexing** on `userId` and `concertId` columns, plus `EXPLAIN ANALYZE` to identify slow queries. The `getStats()` endpoint already uses `SUM()`/`COUNT()` aggregations instead of loading data into memory.
+- **Cursor-based pagination** for concert listings and history tables to avoid unbounded result sets.
+- **CDN** for static assets (JS, CSS) via CloudFront. Next.js standalone output is already optimised for this.
+- **Horizontal scaling** with multiple stateless NestJS instances behind a load balancer.
+- **PgBouncer** for database connection pooling under high concurrency.
+- **Read replicas** to offload read-heavy queries from the primary PostgreSQL instance.
 
-1. **Caching layer** — Introduce Redis to cache frequently accessed data such as concert listings and statistics summaries. Invalidate the cache on write operations. On the frontend, SWR already provides client-side caching with stale-while-revalidate semantics.
+### 2. Preventing overselling during concurrent reservations
 
-2. **Database optimisation** — Add indexes on frequently queried columns (`userId`, `concertId`) and use `EXPLAIN ANALYZE` to identify and resolve slow queries. Our `getStats()` endpoint already uses `SUM()` and `COUNT()` aggregations rather than loading entire datasets into application memory.
+The goal: no concert should have more reservations than seats — no one stands during the show.
 
-3. **Pagination** — Implement cursor-based pagination for concert listings and history tables to avoid transferring unbounded result sets.
+- **Row-level locking** — `SELECT ... FOR UPDATE` inside a transaction serialises concurrent reservations for the same concert, eliminating the race condition between checking availability and inserting.
+- **Unique constraint** on `(userId, concertId)` as a database-level safety net, ensuring one seat per user even if the application check has a race condition.
+- **Atomic SQL** — a single `INSERT ... SELECT ... WHERE count < seats` statement that combines the check and insert into one atomic operation.
+- **Queue-based processing** (BullMQ/Redis) for extremely high-demand events, serialising requests per concert with async status polling.
+- **Optimistic locking** via a `version` column on concerts, detecting conflicts with `WHERE version = :expected`.
 
-4. **CDN and static asset optimisation** — Serve JavaScript, CSS, and other static assets through a CDN such as CloudFront. The Next.js standalone build output is already optimised for this purpose.
+**Recommended approach:** combine row-level locking + unique constraint for correctness without additional infrastructure.
 
-5. **Horizontal scaling** — Deploy multiple backend instances behind a load balancer. NestJS is stateless by design, which makes horizontal scaling straightforward.
+### 3. User authentication and authorisation
 
-6. **Connection pooling** — Place PgBouncer in front of PostgreSQL to multiplex application connections efficiently under high concurrency.
+The current implementation uses a hardcoded user, as authentication was not in scope. In production, I would add:
 
-7. **Read replicas** — Route read-heavy queries (concert listings, statistics, history) to PostgreSQL read replicas, reserving the primary instance for write operations.
+- **JWT authentication** via `@nestjs/jwt` and `@nestjs/passport` — `POST /auth/register` and `POST /auth/login` endpoints, with tokens stored in `httpOnly` cookies to prevent XSS.
+- **Social login** (Google, Facebook) via OAuth 2.0 Passport strategies, or **NextAuth.js** on the frontend for simplified multi-provider session management.
+- **Role-based access control** using a `@Roles('admin')` guard to protect admin endpoints. User identity extracted from the JWT payload instead of the request body.
+- This would replace the hardcoded `userId`, the "Switch to Admin/User" toggle, and add a dedicated login page with protected route redirects.
 
-### Handling concurrent ticket reservations without overselling
+### 4. API security
 
-The central challenge is ensuring that the number of reservations for any concert never exceeds the number of available seats — no attendee should have to stand during the show.
+- **Rate limiting** (`@nestjs/throttler`) — e.g., 100 req/min per IP, stricter on reservation endpoints to deter bots.
+- **CORS restriction** — lock `enableCors()` to the frontend domain only, with `credentials: true`.
+- **Helmet** middleware for security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options).
+- **Input sanitisation** — already handled by `class-validator` with `whitelist: true`, stripping unknown properties from requests.
+- **HTTPS enforcement** — TLS termination at the load balancer, `Secure` and `SameSite` flags on cookies.
+- **Payload limits** — `json({ limit: '1mb' })` to prevent oversized request DoS.
+- **SQL injection prevention** — already covered by TypeORM's parameterised queries.
+- **Dependency auditing** — `npm audit` integrated into the CI pipeline.
 
-1. **Database transactions with row-level locking** — Wrap the availability check and reservation insert within a single transaction, using `SELECT ... FOR UPDATE` (pessimistic locking) on the concert row. This forces concurrent requests targeting the same concert to queue rather than execute in parallel, eliminating the race condition between checking availability and inserting the reservation.
+### 5. CI/CD pipeline
 
-2. **Unique constraint as a safety net** — Add a database-level unique constraint on `(userId, concertId)` in the reservations table. Even if the application-level duplicate check is subject to a race condition, the database will reject the second insert with a constraint violation, which the application can catch and present as a user-friendly error.
+**Continuous Integration** (on every PR and push to `main`):
+- Lint (ESLint) → Test (Jest with real PostgreSQL service container) → Build (NestJS + Next.js) → Security audit (`npm audit`)
 
-3. **Atomic check-and-insert** — Replace the two-step check-then-insert pattern with a single atomic SQL statement that only inserts when the seat count condition is satisfied:
-   ```sql
-   INSERT INTO reservations ("userId", "concertId")
-   SELECT :userId, :concertId
-   WHERE (SELECT COUNT(*) FROM reservations WHERE "concertId" = :concertId)
-       < (SELECT seats FROM concerts WHERE id = :concertId)
-   ```
+**Continuous Deployment** (on merge to `main`):
+- Build and push Docker images to a container registry (GHCR, ECR, or Docker Hub)
+- Run database migrations as a pre-deployment step
+- Staged rollout: deploy to staging → smoke tests → promote to production (blue-green or rolling)
+- Rollback via Git tags and Docker image tags; `migration:revert` for schema changes
 
-4. **Queue-based processing** — For exceptionally high-demand events (thousands of concurrent requests targeting a single concert), introduce a message queue (e.g., BullMQ backed by Redis) to serialise reservation requests per concert. The API returns an immediate acknowledgement, and a background worker processes reservations sequentially. The frontend polls for the outcome or receives updates via WebSocket.
-
-5. **Optimistic locking** — Add a `version` column to the concerts table. Each reservation attempt reads the current version, and the subsequent update includes a `WHERE version = :expectedVersion` clause. If another transaction has modified the row in the interim, the update affects zero rows, signalling a conflict that the application can retry.
-
-For this application's scale, the recommended approach combines **strategy 1** (transaction with row-level locking) and **strategy 2** (unique constraint). Together, they guarantee correctness without introducing additional infrastructure.
-
-### User authentication and authorisation
-
-The current implementation uses a hardcoded user for simplicity, as authentication was not part of the core requirements. In a production environment, I would implement the following:
-
-**Authentication strategy:**
-
-1. **JWT-based authentication** — Implement `POST /auth/register` and `POST /auth/login` endpoints using `@nestjs/jwt` and `@nestjs/passport`. On successful login, the server issues a signed JWT containing the user's ID and role. The frontend stores this token (preferably in an `httpOnly` cookie to mitigate XSS attacks) and attaches it to every subsequent API request via an Axios interceptor.
-
-2. **Social login (Google, Facebook)** — Integrate OAuth 2.0 providers through Passport strategies (`passport-google-oauth20`, `passport-facebook`). The flow would be:
-   - The frontend redirects the user to the provider's consent screen.
-   - Upon approval, the provider redirects back with an authorisation code.
-   - The backend exchanges this code for user profile data, creates or links the account in the database, and issues a JWT as above.
-   - Libraries such as **NextAuth.js** on the frontend can simplify session management and support multiple providers with minimal configuration.
-
-3. **Role-based access control (RBAC)** — Apply a custom `@Roles('admin')` decorator combined with a NestJS guard to protect admin-only endpoints (concert creation, deletion, viewing all users' history). User-facing endpoints would extract the `userId` from the JWT payload rather than accepting it as a request parameter, eliminating the possibility of one user acting on behalf of another.
-
-**How this would change the current architecture:**
-
-- The `userId` would no longer be hardcoded on the frontend; it would be derived from the authenticated session.
-- API endpoints such as `POST /reservations` would read the user identity from the JWT token rather than the request body, preventing spoofing.
-- The sidebar's "Switch to Admin / Switch to User" toggle would be replaced by actual role-based routing, where the interface adapts based on the authenticated user's role.
-- A dedicated login/register page would serve as the entry point, with protected routes redirecting unauthenticated users.
-
-### API security
-
-Beyond authentication, the following measures would harden the API against common attack vectors:
-
-1. **Rate limiting** — Apply `@nestjs/throttler` to cap the number of requests per client (e.g., 100 requests per minute per IP). This mitigates brute-force login attempts and prevents a single client from overwhelming the server. Critical endpoints such as `POST /reservations` could have stricter limits to deter automated ticket-grabbing bots.
-
-2. **CORS restriction** — The current configuration enables CORS for all origins (`app.enableCors()`). In production, this should be locked down to the frontend's domain only:
-   ```typescript
-   app.enableCors({
-     origin: process.env.ALLOWED_ORIGINS?.split(',') || ['https://yourdomain.com'],
-     credentials: true,
-   });
-   ```
-
-3. **Helmet** — Integrate the `helmet` middleware to set security-related HTTP headers (Content-Security-Policy, X-Content-Type-Options, X-Frame-Options, Strict-Transport-Security). This provides defence-in-depth against XSS, clickjacking, and MIME-type sniffing attacks with a single line of configuration.
-
-4. **Input sanitisation** — The application already uses `class-validator` with `whitelist: true` in the global validation pipe, which strips any properties not defined in the DTO. This prevents mass-assignment vulnerabilities where a client attempts to set fields such as `role` or `id` directly.
-
-5. **HTTPS enforcement** — All traffic should be served over TLS in production. Terminate SSL at the load balancer or reverse proxy (Nginx, AWS ALB) and redirect HTTP requests to HTTPS. Set the `Secure` and `SameSite` flags on authentication cookies to prevent interception and CSRF attacks.
-
-6. **Request payload limits** — Configure maximum request body sizes to prevent denial-of-service attacks via oversized payloads:
-   ```typescript
-   app.use(json({ limit: '1mb' }));
-   ```
-
-7. **SQL injection prevention** — TypeORM's parameterised queries already protect against SQL injection. All user input passes through the ORM's query builder or repository methods, which escape values automatically. Raw SQL queries (such as those in migrations) do not accept user input and are therefore safe.
-
-8. **Dependency auditing** — Run `npm audit` regularly and integrate it into the CI pipeline to detect and patch known vulnerabilities in third-party packages before they reach production.
-
-### CI/CD pipeline
-
-To ensure code quality and enable reliable deployments, I would set up a GitHub Actions pipeline with the following stages:
-
-**Continuous Integration (on every pull request and push to `main`):**
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  backend:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ticket_db_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: cd backend && npm ci
-      - run: cd backend && npm run lint
-      - run: cd backend && npm test
-      - run: cd backend && npm run build
-
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: cd frontend && npm ci
-      - run: cd frontend && npm run lint
-      - run: cd frontend && npm run build
-```
-
-**Pipeline stages explained:**
-
-1. **Lint** — Run ESLint on both frontend and backend to enforce code style and catch issues early. Pull requests with lint failures are blocked from merging.
-
-2. **Test** — Execute the full unit test suite against a real PostgreSQL instance (spun up as a GitHub Actions service container). This validates all CRUD operations, business logic, and edge cases in an environment that mirrors production.
-
-3. **Build** — Compile both the NestJS backend (`npm run build`) and the Next.js frontend (`npm run build`) to verify that the code produces valid production artefacts. TypeScript type errors surface at this stage.
-
-4. **Security audit** — Run `npm audit` as part of the pipeline to flag known vulnerabilities in dependencies before they reach production.
-
-**Continuous Deployment (on merge to `main`):**
-
-For deployment, the pipeline would extend with:
-
-1. **Docker image build** — Build multi-stage Docker images for both services and push them to a container registry (GitHub Container Registry, AWS ECR, or Docker Hub).
-
-2. **Database migration** — Run `npm run migration:run` against the production database as a pre-deployment step. This ensures schema changes are applied before the new application version starts serving traffic.
-
-3. **Staged rollout** — Deploy to a staging environment first, run smoke tests (health check endpoints, critical user flows), and then promote to production. Use blue-green or rolling deployment strategies to achieve zero-downtime releases.
-
-4. **Rollback plan** — Tag each release with a Git tag and Docker image tag. If a deployment introduces a regression, revert to the previous image and run `npm run migration:revert` to undo the most recent schema change.
-
-**Branch protection rules:**
-
-- Require all CI checks to pass before merging pull requests
-- Require at least one code review approval
-- Prevent force-pushes to `main`
-- Automatically delete merged branches to keep the repository clean
+**Branch protection:** require passing CI + code review approval, block force-pushes to `main`, auto-delete merged branches.
