@@ -16,8 +16,8 @@ export class ReservationHistory {
   @ManyToOne(() => User, { eager: true })
   user: User;
 
-  @ManyToOne(() => Concert, { eager: true, onDelete: 'SET NULL' })
-  concert: Concert;
+  @ManyToOne(() => Concert, { eager: true, onDelete: 'SET NULL', nullable: true })
+  concert: Concert | null;
 
   @Column()
   action: string; // 'reserve' or 'cancel'

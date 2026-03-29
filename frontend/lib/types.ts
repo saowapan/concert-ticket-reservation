@@ -24,5 +24,5 @@ export interface HistoryEntry {
   action: string;
   createdAt: string;
   user: { username: string };
-  concert: { name: string };
+  concert: { name: string } | null;
 }
